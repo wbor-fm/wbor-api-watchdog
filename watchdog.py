@@ -111,20 +111,25 @@ async def fetch_latest_spin():
 async def listen_to_sse():
     """
     Connect to the SSE stream and listen for new spin messages.
-
     When a new spin message is received, fetch the latest spin data and
-    publish it to RabbitMQ.
+    publish it to RabbitMQ. On repeated failures, fall back to polling.
     """
     logger.debug("Listening for SSE at: %s", SSE_STREAM_URL)
 
-    # We'll use a loop to reconnect if SSE fails
+    retry_count = 0
+    max_retries = 5
+
     while not shutdown_event.is_set():
-        retry_count = 0
         try:
+            # Connect to SSE in a streaming fashion
+            logger.info("Attempting SSE connection (try #%d)...", retry_count + 1)
             async for event in aiosseclient(SSE_STREAM_URL):
                 if shutdown_event.is_set():
                     logger.info("Shutting down SSE listener.")
                     break
+
+                # Reset retry counter if we get a successful event
+                retry_count = 0
 
                 if event.data == NEW_SPIN_EVENT:
                     logger.debug("Received SSE event: `%s`", event.data)
@@ -135,17 +140,27 @@ async def listen_to_sse():
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             if shutdown_event.is_set():
                 break
+
             retry_count += 1
-            if retry_count > 5:
-                logger.error("SSE attempts exceeded 5, switching to polling fallback.")
+            logger.error(
+                "SSE connection dropped or failed (attempt #%d): %s", retry_count, e
+            )
+
+            if retry_count > max_retries:
+                logger.error(
+                    "SSE attempts exceeded %d. Switching to polling fallback.",
+                    max_retries,
+                )
                 await poll_for_spins()
                 return
-            logger.error("SSE connection dropped or failed: %s", e)
+
+            # Sleep briefly before the next reconnect attempt
             await asyncio.sleep(5)
 
         except Exception as e:  # pylint: disable=broad-except
             if shutdown_event.is_set():
                 break
+
             logger.critical("Unexpected error in SSE loop: %s", e, exc_info=True)
             await asyncio.sleep(5)
 
