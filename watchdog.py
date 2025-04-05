@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import signal
 import sys
 import time
@@ -92,7 +93,7 @@ async def sse_is_reachable():
 async def fetch_latest_spin():
     """Fetch the latest spin from the API."""
     async with aiohttp.ClientSession() as session:
-        async with session.get(SPIN_GET_URL) as response:
+        async with session.get(SPIN_GET_URL, timeout=10) as response:
             if response.status == 200:
                 spins_data = await response.json()
 
@@ -128,8 +129,11 @@ async def listen_to_sse():
                     logger.info("Shutting down SSE listener.")
                     break
 
-                # Reset retry counter if we get a successful event
-                retry_count = 0
+                if retry_count > 0:
+                    logger.info(
+                        "Successfully reconnected to SSE endpoint at %s", SSE_STREAM_URL
+                    )
+                    retry_count = 0
 
                 if event.data == NEW_SPIN_EVENT:
                     logger.debug("Received SSE event: `%s`", event.data)
@@ -143,7 +147,10 @@ async def listen_to_sse():
 
             retry_count += 1
             logger.error(
-                "SSE connection dropped or failed (attempt #%d): %s", retry_count, e
+                "SSE connection dropped or failed (attempt #%d) for URL %s: %s",
+                retry_count,
+                SSE_STREAM_URL,
+                e,
             )
 
             if retry_count > max_retries:
@@ -154,8 +161,9 @@ async def listen_to_sse():
                 await poll_for_spins()
                 return
 
-            # Sleep briefly before the next reconnect attempt
-            await asyncio.sleep(5)
+            # Sleep briefly before the next reconnect attempt with exponential backoff
+            backoff = min(2**retry_count + random.uniform(0, 1), 30)
+            await asyncio.sleep(backoff)
 
         except Exception as e:  # pylint: disable=broad-except
             if shutdown_event.is_set():
