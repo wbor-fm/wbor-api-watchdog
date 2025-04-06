@@ -48,6 +48,8 @@ logger.debug("SPIN_GET_URL: `%s`", SPIN_GET_URL)
 
 NEW_SPIN_EVENT = "new spin data"
 
+LAST_SPIN_ID = None
+
 if not all(
     [
         RABBITMQ_HOST,
@@ -75,6 +77,20 @@ def handle_shutdown(signum, _frame):
 
 signal.signal(signal.SIGINT, handle_shutdown)
 signal.signal(signal.SIGTERM, handle_shutdown)
+
+
+async def process_spin(spin):
+    """
+    Check if the spin is new (by comparing spin IDs). If it is,
+    update the last_spin_id and publish the spin data.
+    """
+    global LAST_SPIN_ID  # pylint: disable=global-statement
+    spin_id = spin.get("id")
+    if spin_id != LAST_SPIN_ID:
+        LAST_SPIN_ID = spin_id
+        await send_to_rabbitmq(spin)
+    else:
+        logger.debug("Duplicate spin received (ID: %s). Skipping publish.", spin_id)
 
 
 async def sse_is_reachable():
@@ -123,7 +139,10 @@ async def listen_to_sse():
     while not shutdown_event.is_set():
         try:
             # Connect to SSE in a streaming fashion
-            logger.info("Attempting SSE connection (try #%d)...", retry_count + 1)
+            if retry_count == 0:
+                logger.info("Connecting to SSE...")
+            else:
+                logger.info("Connecting to SSE (try #%d)...", retry_count + 1)
             async for event in aiosseclient(SSE_STREAM_URL):
                 if shutdown_event.is_set():
                     logger.info("Shutting down SSE listener.")
@@ -139,14 +158,14 @@ async def listen_to_sse():
                     logger.debug("Received SSE event: `%s`", event.data)
                     spin = await fetch_latest_spin()
                     if spin is not None:
-                        await send_to_rabbitmq(spin)
+                        await process_spin(spin)
 
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             if shutdown_event.is_set():
                 break
 
             retry_count += 1
-            logger.error(
+            logger.warning(
                 "SSE connection dropped or failed (attempt #%d) for URL %s: %s",
                 retry_count,
                 SSE_STREAM_URL,
@@ -154,7 +173,7 @@ async def listen_to_sse():
             )
 
             if retry_count > max_retries:
-                logger.error(
+                logger.warning(
                     "SSE attempts exceeded %d. Switching to polling fallback.",
                     max_retries,
                 )
@@ -185,7 +204,6 @@ async def poll_for_spins(poll_interval=3, retry_sse_interval=300):
         available again and return to SSE if it is.
     """
     logger.info("Polling for new spins as a fallback...")
-    last_spin_id = None
     time_of_last_sse_check = time.time()
 
     while not shutdown_event.is_set():
@@ -193,10 +211,7 @@ async def poll_for_spins(poll_interval=3, retry_sse_interval=300):
             # Poll for a new spin
             current_spin = await fetch_latest_spin()
             if current_spin is not None:
-                spin_id = current_spin.get("id")
-                if spin_id != last_spin_id:
-                    last_spin_id = spin_id
-                    await send_to_rabbitmq(current_spin)
+                await process_spin(current_spin)
 
             # Periodically attempt to see if SSE is available
             if time.time() - time_of_last_sse_check >= retry_sse_interval:
