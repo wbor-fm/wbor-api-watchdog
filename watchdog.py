@@ -46,6 +46,13 @@ SPIN_GET_URL = f"{API_BASE_URL}/api/spins"
 logger.debug("SSE_STREAM_URL: `%s`", SSE_STREAM_URL)
 logger.debug("SPIN_GET_URL: `%s`", SPIN_GET_URL)
 
+# Configurable retry and circuit breaker parameters
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "5"))
+POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "3"))
+RETRY_SSE_INTERVAL = int(os.getenv("RETRY_SSE_INTERVAL", "300"))
+CB_ERROR_THRESHOLD = int(os.getenv("CB_ERROR_THRESHOLD", "5"))
+CB_RESET_TIMEOUT = int(os.getenv("CB_RESET_TIMEOUT", "60"))
+
 # Persistent connections
 HTTP_SESSION = None
 RABBITMQ_PUBLISHER = None
@@ -105,8 +112,6 @@ class RabbitMQPublisher:  # pylint: disable=too-many-instance-attributes
 
 NEW_SPIN_EVENT = "new spin data"
 
-LAST_SPIN_ID = None
-
 if not all(
     [
         RABBITMQ_HOST,
@@ -136,15 +141,26 @@ signal.signal(signal.SIGINT, handle_shutdown)
 signal.signal(signal.SIGTERM, handle_shutdown)
 
 
-async def process_spin(spin):
+class SpinState:
+    """
+    Track the last spin ID to avoid duplicates.
+    """
+
+    def __init__(self):
+        self.last_spin_id = None
+
+
+SPIN_STATE = SpinState()
+
+
+async def process_spin(spin, state):
     """
     Check if the spin is new (by comparing spin IDs). If it is,
     update the last_spin_id and publish the spin data.
     """
-    global LAST_SPIN_ID  # pylint: disable=global-statement
     spin_id = spin.get("id")
-    if spin_id != LAST_SPIN_ID:
-        LAST_SPIN_ID = spin_id
+    if spin_id != state.last_spin_id:
+        state.last_spin_id = spin_id
         await send_to_rabbitmq(spin)
     else:
         logger.debug("Duplicate spin received (ID: `%s`). Skipping publish.", spin_id)
@@ -157,7 +173,7 @@ async def sse_is_reachable():
     try:
         async with HTTP_SESSION.get(SSE_STREAM_URL, timeout=5) as response:
             return response.status == 200
-    except Exception as e:  # pylint: disable=broad-except
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
         logger.debug("SSE reachability check failed: %s", e)
         return False
 
@@ -182,18 +198,28 @@ async def fetch_latest_spin():
         return None
 
 
-async def listen_to_sse():
+async def listen_to_sse(state):
     """
     Connect to the SSE stream and listen for new spin messages.
     When a new spin message is received, fetch the latest spin data and
     publish it to RabbitMQ. On repeated failures, fall back to polling.
     """
     logger.debug("Listening for SSE at: %s", SSE_STREAM_URL)
+    circuit_breaker_failure_count = 0
 
     retry_count = 0
-    max_retries = 5
 
     while not shutdown_event.is_set():
+        if circuit_breaker_failure_count >= CB_ERROR_THRESHOLD:
+            logger.error(
+                "Circuit breaker triggered. Pausing SSE connection attempts for %d seconds.",
+                CB_RESET_TIMEOUT,
+            )
+            await asyncio.sleep(CB_RESET_TIMEOUT)
+            circuit_breaker_failure_count = 0
+            retry_count = 0
+            continue
+
         try:
             # Connect to SSE in a streaming fashion
             if retry_count == 0:
@@ -215,12 +241,13 @@ async def listen_to_sse():
                     logger.debug("Received SSE event: `%s`", event.data)
                     spin = await fetch_latest_spin()
                     if spin is not None:
-                        await process_spin(spin)
+                        await process_spin(spin, state)
 
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             if shutdown_event.is_set():
                 break
 
+            circuit_breaker_failure_count += 1
             retry_count += 1
             logger.warning(
                 "SSE connection dropped or failed (attempt #%d) for URL %s: %s",
@@ -229,27 +256,22 @@ async def listen_to_sse():
                 e,
             )
 
-            if retry_count > max_retries:
+            if retry_count > MAX_RETRIES:
                 logger.warning(
                     "SSE attempts exceeded %d. Switching to polling fallback.",
-                    max_retries,
+                    MAX_RETRIES,
                 )
-                await poll_for_spins()
+                await poll_for_spins(state)
                 return
 
             # Sleep briefly before the next reconnect attempt with exponential backoff
             backoff = min(2**retry_count + random.uniform(0, 1), 30)
             await asyncio.sleep(backoff)
 
-        except Exception as e:  # pylint: disable=broad-except
-            if shutdown_event.is_set():
-                break
 
-            logger.critical("Unexpected error in SSE loop: %s", e, exc_info=True)
-            await asyncio.sleep(5)
-
-
-async def poll_for_spins(poll_interval=3, retry_sse_interval=300):
+async def poll_for_spins(
+    state, poll_interval=POLL_INTERVAL, retry_sse_interval=RETRY_SSE_INTERVAL
+):
     """
     Poll for new spins at a fixed interval. Periodically check if SSE is
     available again, and if so, return to allow the SSE listener to
@@ -268,7 +290,7 @@ async def poll_for_spins(poll_interval=3, retry_sse_interval=300):
             # Poll for a new spin
             current_spin = await fetch_latest_spin()
             if current_spin is not None:
-                await process_spin(current_spin)
+                await process_spin(current_spin, state)
 
             # Periodically attempt to see if SSE is available
             if time.time() - time_of_last_sse_check >= retry_sse_interval:
@@ -320,7 +342,7 @@ async def main():
     await RABBITMQ_PUBLISHER.connect()
 
     try:
-        await listen_to_sse()
+        await listen_to_sse(SPIN_STATE)
     except (
         aiohttp.ClientError,
         asyncio.TimeoutError,
@@ -335,14 +357,8 @@ async def main():
 
 
 if __name__ == "__main__":
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
     try:
-        loop.run_until_complete(main())
+        asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Shutdown requested.")
-    finally:
         shutdown_event.set()
-        loop.run_until_complete(asyncio.sleep(0.1))  # Allow cleanup tasks
-        loop.close()
