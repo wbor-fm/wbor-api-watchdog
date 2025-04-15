@@ -46,6 +46,63 @@ SPIN_GET_URL = f"{API_BASE_URL}/api/spins"
 logger.debug("SSE_STREAM_URL: `%s`", SSE_STREAM_URL)
 logger.debug("SPIN_GET_URL: `%s`", SPIN_GET_URL)
 
+# Persistent connections
+HTTP_SESSION = None
+RABBITMQ_PUBLISHER = None
+
+
+class RabbitMQPublisher:  # pylint: disable=too-many-instance-attributes
+    """
+    Object to manage RabbitMQ connection and publishing messages.
+    """
+
+    def __init__(  # pylint: disable=too-many-arguments, too-many-positional-arguments
+        self, host, user, password, exchange_name, routing_key
+    ):
+        self.host = host
+        self.user = user
+        self.password = password
+        self.exchange_name = exchange_name
+        self.routing_key = routing_key
+        self.connection = None
+        self.channel = None
+        self.exchange = None
+
+    async def connect(self):
+        """
+        Connect to RabbitMQ and declare the exchange (if it doesn't
+        exist).
+        """
+        self.connection = await aio_pika.connect_robust(
+            host=self.host, login=self.user, password=self.password
+        )
+        self.channel = await self.connection.channel()
+        self.exchange = await self.channel.declare_exchange(
+            self.exchange_name, aio_pika.ExchangeType.TOPIC, durable=True
+        )
+
+    async def publish(self, spin_data):
+        """
+        Publish spin data to RabbitMQ.
+        """
+        message = aio_pika.Message(body=json.dumps(spin_data).encode("utf-8"))
+        await self.exchange.publish(message, routing_key=self.routing_key)
+        logger.info(
+            "Published spin data to RabbitMQ on `%s` with key `%s`: `%s - %s`",
+            self.exchange_name,
+            self.routing_key,
+            spin_data.get("artist"),
+            spin_data.get("song"),
+        )
+
+    async def close(self):
+        """
+        Close the RabbitMQ connection and channel.
+        """
+        if self.connection:
+            await self.connection.close()
+
+
 NEW_SPIN_EVENT = "new spin data"
 
 LAST_SPIN_ID = None
@@ -90,7 +147,7 @@ async def process_spin(spin):
         LAST_SPIN_ID = spin_id
         await send_to_rabbitmq(spin)
     else:
-        logger.debug("Duplicate spin received (ID: %s). Skipping publish.", spin_id)
+        logger.debug("Duplicate spin received (ID: `%s`). Skipping publish.", spin_id)
 
 
 async def sse_is_reachable():
@@ -98,31 +155,31 @@ async def sse_is_reachable():
     Simple helper function to check if the SSE endpoint is responding.
     """
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(SSE_STREAM_URL, timeout=5) as response:
-                return response.status == 200
+        async with HTTP_SESSION.get(SSE_STREAM_URL, timeout=5) as response:
+            return response.status == 200
     except Exception as e:  # pylint: disable=broad-except
         logger.debug("SSE reachability check failed: %s", e)
         return False
 
 
 async def fetch_latest_spin():
-    """Fetch the latest spin from the API."""
-    async with aiohttp.ClientSession() as session:
-        async with session.get(SPIN_GET_URL, timeout=10) as response:
-            if response.status == 200:
-                spins_data = await response.json()
+    """
+    Fetch the latest spin from the API.
+    """
+    async with HTTP_SESSION.get(SPIN_GET_URL, timeout=10) as response:
+        if response.status == 200:
+            spins_data = await response.json()
 
-                # Directly fetch item 0 as it is the latest spin
-                items = spins_data.get("items")
-                if items:
-                    latest_spin = items[0]
-                    logger.debug("Latest spin: `%s`", latest_spin)
-                    return latest_spin
-                logger.warning("No spins found in response.")
-                return None
-            logger.critical("Failed to fetch spin data: `%s`", response.status)
+            # Directly fetch item 0 as it is the latest spin
+            items = spins_data.get("items")
+            if items:
+                latest_spin = items[0]
+                logger.debug("Latest spin: `%s`", latest_spin)
+                return latest_spin
+            logger.warning("No spins found in response.")
             return None
+        logger.critical("Failed to fetch spin data: `%s`", response.status)
+        return None
 
 
 async def listen_to_sse():
@@ -232,35 +289,12 @@ async def poll_for_spins(poll_interval=3, retry_sse_interval=300):
 
 
 async def send_to_rabbitmq(spin_data):
-    """Publish spin data to RabbitMQ."""
+    """
+    Publish spin data to RabbitMQ using the persistent connection.
+    """
     try:
-        connection = await aio_pika.connect_robust(
-            host=RABBITMQ_HOST, login=RABBITMQ_USER, password=RABBITMQ_PASS
-        )
-        channel = await connection.channel()
-
-        # Declare the durable topic exchange
-        exchange = await channel.declare_exchange(
-            RABBITMQ_EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True
-        )
-
-        # Publish the message
-        message = aio_pika.Message(body=json.dumps(spin_data).encode("utf-8"))
-        await exchange.publish(message, routing_key=RABBITMQ_ROUTING_KEY)
-
-        logger.info(
-            "Published spin data to RabbitMQ on `%s` with key `%s`: `%s - %s`",
-            RABBITMQ_EXCHANGE,
-            RABBITMQ_ROUTING_KEY,
-            spin_data.get("artist"),
-            spin_data.get("song"),
-        )
-
-        await connection.close()
-    except (
-        aio_pika.exceptions.AMQPConnectionError,
-        aio_pika.exceptions.ChannelClosed,
-    ) as e:
+        await RABBITMQ_PUBLISHER.publish(spin_data)
+    except (aio_pika.exceptions.AMQPError, json.JSONDecodeError) as e:
         logger.critical("Error publishing to RabbitMQ: `%s`", e)
 
 
@@ -268,11 +302,22 @@ async def main():
     """
     Entry point for the script.
 
-    This function listens to the SSE stream and triggers updates when a
-    new spin is available. If SSE fails repeatedly, it falls back to
-    polling, which can return to SSE if it becomes available again.
+    Initializes persistent HTTP session and RabbitMQ publisher, then
+    starts the SSE listener.
     """
+    global HTTP_SESSION, RABBITMQ_PUBLISHER  # pylint: disable=global-statement
     logger.info("Starting WBOR Spinitron watchdog...")
+
+    # Initialize persistent HTTP session and RabbitMQ publisher
+    HTTP_SESSION = aiohttp.ClientSession()
+    RABBITMQ_PUBLISHER = RabbitMQPublisher(
+        RABBITMQ_HOST,
+        RABBITMQ_USER,
+        RABBITMQ_PASS,
+        RABBITMQ_EXCHANGE,
+        RABBITMQ_ROUTING_KEY,
+    )
+    await RABBITMQ_PUBLISHER.connect()
 
     try:
         await listen_to_sse()
@@ -283,6 +328,9 @@ async def main():
     ) as e:
         logger.critical("Unhandled exception in main: %s", e, exc_info=True)
     finally:
+        logger.info("Shutting down connections...")
+        await HTTP_SESSION.close()
+        await RABBITMQ_PUBLISHER.close()
         logger.info("Shutdown complete.")
 
 
