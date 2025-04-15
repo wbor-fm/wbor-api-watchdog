@@ -4,11 +4,13 @@ RabbitMQ. Listens for SSE updates to indicate a new spin is available,
 falling back to polling if SSE becomes unavailable.
 
 Author: Mason Daugherty <@mdrxy>
-Version: 1.0.0
-Last Modified: 2025-03-23
+Version: 1.1.0
+Last Modified: 2025-04-15
 
 Changelog:
     - 1.0.0 (2025-03-23): Initial release.
+    - 1.1.0 (2025-04-15): Fixes and enhancements to RabbitMQ connection
+        management, error handling, and state management.
 """
 
 import asyncio
