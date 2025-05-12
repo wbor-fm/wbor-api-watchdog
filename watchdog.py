@@ -48,13 +48,13 @@ RABBITMQ_ROUTING_KEY = os.getenv("RABBITMQ_ROUTING_KEY")
 
 # Proxy API settings
 API_BASE_URL = os.getenv("API_BASE_URL")
-SSE_STREAM_URL = f"{API_BASE_URL}/spin-events" if API_BASE_URL else None
-PROXY_SPIN_GET_URL = f"{API_BASE_URL}/api/spins" if API_BASE_URL else None
+SSE_STREAM_URL = f"{API_BASE_URL.rstrip('/')}/spin-events" if API_BASE_URL else None
+PROXY_SPIN_GET_URL = f"{API_BASE_URL.rstrip('/')}/api/spins" if API_BASE_URL else None
 
 # Primary Spinitron API settings (fallback)
 SPINITRON_API_URL = os.getenv("SPINITRON_API_URL")
 SPINITRON_API_KEY = os.getenv("SPINITRON_API_KEY")
-PRIMARY_SPIN_GET_URL = f"{SPINITRON_API_URL}/spins" if SPINITRON_API_URL else None
+PRIMARY_SPIN_GET_URL = f"{SPINITRON_API_URL.rstrip('/')}/spins" if SPINITRON_API_URL else None
 
 
 logger.debug("Proxy SSE_STREAM_URL: `%s`", SSE_STREAM_URL)
@@ -71,7 +71,7 @@ CB_ERROR_THRESHOLD = int(os.getenv("CB_ERROR_THRESHOLD", "5"))
 CB_RESET_TIMEOUT = int(os.getenv("CB_RESET_TIMEOUT", "60"))
 
 # Persistent connections
-HTTP_SESSION = None
+HTTP_SESSION = None # This session will be used for fetch_latest_spin and sse_is_reachable
 RABBITMQ_PUBLISHER = None
 
 
@@ -130,9 +130,6 @@ class RabbitMQPublisher:  # pylint: disable=too-many-instance-attributes
 NEW_SPIN_EVENT = "new spin data"
 
 # Validate required environment variables
-required_proxy_vars = [API_BASE_URL] if not (SPINITRON_API_URL and SPINITRON_API_KEY) else []
-required_primary_vars = [SPINITRON_API_URL, SPINITRON_API_KEY] if not API_BASE_URL else []
-
 if not all(
     [
         RABBITMQ_HOST,
@@ -261,7 +258,7 @@ async def fetch_latest_spin():
         logger.debug("Proxy SPIN_GET_URL not configured. Skipping proxy attempt.")
 
     # Attempt 2: Fetch from Primary Spinitron API (if proxy failed or not configured)
-    if PRIMARY_SPIN_GET_URL and SPINITRON_API_KEY:
+    if latest_spin is None and PRIMARY_SPIN_GET_URL and SPINITRON_API_KEY:
         logger.info("Falling back to primary Spinitron API: `%s`", PRIMARY_SPIN_GET_URL)
         headers = {"Authorization": f"Bearer {SPINITRON_API_KEY}"}
         try:
@@ -284,12 +281,12 @@ async def fetch_latest_spin():
             logger.error(
                 "Error fetching or parsing spin data from primary API `%s`: %s", PRIMARY_SPIN_GET_URL, e
             )
-    elif not (PRIMARY_SPIN_GET_URL and SPINITRON_API_KEY):
+    elif latest_spin is None and not (PRIMARY_SPIN_GET_URL and SPINITRON_API_KEY):
         logger.warning("Primary Spinitron API URL or Key not configured. Cannot fall back.")
     
     if latest_spin is None:
         logger.error("Failed to fetch latest spin from all available sources.")
-    return None
+    return latest_spin
 
 
 async def listen_to_sse(state):
@@ -328,7 +325,7 @@ async def listen_to_sse(state):
             else:
                 logger.info("Reconnecting to proxy SSE stream (attempt #%d): %s", retry_count + 1, SSE_STREAM_URL)
 
-            async for event in aiosseclient(SSE_STREAM_URL, session=HTTP_SESSION): # Pass session
+            async for event in aiosseclient(SSE_STREAM_URL):
                 if shutdown_event.is_set():
                     logger.info("Shutting down SSE listener.")
                     break
