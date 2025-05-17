@@ -55,12 +55,13 @@ except ImportError:
     )
     logger = logging.getLogger(__name__)
     logger.warning(
-        "utils.logging.configure_logging not found! Using basic logging configuration."
+        "`utils.logging.configure_logging` not found! Using basic logging configuration."
     )
 
 
 load_dotenv()
 
+# RabbitMQ settings
 RABBITMQ_HOST: Optional[str] = os.getenv("RABBITMQ_HOST")
 RABBITMQ_USER: Optional[str] = os.getenv("RABBITMQ_USER")
 RABBITMQ_PASS: Optional[str] = os.getenv("RABBITMQ_PASS")
@@ -75,16 +76,17 @@ SSE_STREAM_URL: Optional[str] = (
 PROXY_SPIN_GET_URL: Optional[str] = (
     f"{API_BASE_URL.rstrip('/')}/api/spins" if API_BASE_URL else None
 )
+NEW_SPIN_EVENT_NAME: str = "new spin data"  # Match the Proxy's SSE event
+logger.debug("Proxy SSE_STREAM_URL: `%s`", SSE_STREAM_URL)
+logger.debug("Proxy SPIN_GET_URL: `%s`", PROXY_SPIN_GET_URL)
+logger.debug("Proxy NEW_SPIN_EVENT_NAME: `%s`", NEW_SPIN_EVENT_NAME)
 
-# Primary Spinitron API settings (fallback)
+# Primary Spinitron API settings (fallback to proxy)
 SPINITRON_API_URL: Optional[str] = os.getenv("SPINITRON_API_URL")
 SPINITRON_API_KEY: Optional[str] = os.getenv("SPINITRON_API_KEY")
 PRIMARY_SPIN_GET_URL: Optional[str] = (
     f"{SPINITRON_API_URL.rstrip('/')}/spins" if SPINITRON_API_URL else None
 )
-
-logger.debug("Proxy SSE_STREAM_URL: `%s`", SSE_STREAM_URL)
-logger.debug("Proxy SPIN_GET_URL: `%s`", PROXY_SPIN_GET_URL)
 logger.debug("Primary SPINITRON_API_URL: `%s`", SPINITRON_API_URL)
 logger.debug("Primary SPIN_GET_URL: `%s`", PRIMARY_SPIN_GET_URL)
 
@@ -95,21 +97,31 @@ RETRY_SSE_INTERVAL_CONFIG: int = int(os.getenv("RETRY_SSE_INTERVAL", "300"))
 CB_ERROR_THRESHOLD_CONFIG: int = int(os.getenv("CB_ERROR_THRESHOLD", "5"))
 CB_RESET_TIMEOUT_CONFIG: int = int(os.getenv("CB_RESET_TIMEOUT", "60"))
 
-NEW_SPIN_EVENT_NAME: str = "new spin data"
 
-
-class SpinState:
+class SpinState:  # pylint: disable=too-few-public-methods
     """
     Track the last spin ID to avoid duplicates.
     """
 
     def __init__(self) -> None:
-        self.last_spin_id: Optional[Union[str, int]] = None  # Spin ID can be str or int
+        # Spin ID can be str or int
+        self.last_spin_id: Optional[Union[str, int]] = None
 
 
 class RabbitMQPublisher:
     """
-    Object to manage RabbitMQ connection and publishing messages.
+    Object responsible for managing RabbitMQ connection and message
+    publishing.
+
+    Attributes:
+    - host (str): RabbitMQ host.
+    - user (str): RabbitMQ username.
+    - password (str): RabbitMQ password.
+    - exchange_name (str): RabbitMQ exchange name.
+    - routing_key (str): RabbitMQ routing key.
+    - connection (AbstractRobustConnection): RabbitMQ connection.
+    - channel (AbstractChannel): RabbitMQ channel.
+    - exchange (AbstractExchange): RabbitMQ exchange.
     """
 
     def __init__(  # pylint: disable=too-many-arguments, too-many-positional-arguments
@@ -131,13 +143,13 @@ class RabbitMQPublisher:
 
     async def connect(self) -> None:
         """
-        Connect to RabbitMQ and declare the exchange (if it doesn't exist).
+        Connect to RabbitMQ using the object's credentials and declare
+        the exchange (if it doesn't already exist).
         """
         self.connection = await aio_pika.connect_robust(
             host=self.host, login=self.user, password=self.password
         )
         self.channel = await self.connection.channel()
-        # Ensure channel is not None before declaring exchange
         if self.channel is None:
             logger.error(
                 "RabbitMQ channel is None after connection. Cannot declare exchange."
@@ -165,7 +177,7 @@ class RabbitMQPublisher:
         if self.exchange is None or (self.channel and self.channel.is_closed):
             logger.warning(
                 "Exchange is None or channel closed. Attempting to (re)connect RabbitMQ before "
-                "publishing."
+                "publishing..."
             )
             try:
                 await self.connect()
@@ -178,6 +190,7 @@ class RabbitMQPublisher:
                 ) from e
 
         if self.exchange is not None:
+            # Publish the message to the exchange with the routing key
             await self.exchange.publish(message, routing_key=self.routing_key)
             logger.info(
                 "Published spin data to RabbitMQ on `%s` with key `%s`: `%s - %s`",
@@ -215,10 +228,19 @@ class RabbitMQPublisher:
 
 class SpinitronWatchdog:
     """
-    Class to monitor Spinitron API for new spins and publish them to
-    RabbitMQ. Listens for SSE events and falls back to polling if SSE is
+    Monitor the Spinitron API for new spins and publish them to
+    RabbitMQ.
+
+    Listens for SSE events and falls back to polling if SSE is
     unavailable. If the proxy API is down, it attempts to use the
     primary Spinitron API.
+
+    Attributes:
+    - http_session (ClientSession): HTTP session for API requests.
+    - rabbitmq_publisher (RabbitMQPublisher): RabbitMQ publisher for
+        sending messages.
+    - spin_state (SpinState): State object to track the last spin ID.
+    - shutdown_event (Event): Event to signal shutdown.
     """
 
     def __init__(self) -> None:
@@ -227,7 +249,6 @@ class SpinitronWatchdog:
         self.spin_state: SpinState = SpinState()
         self.shutdown_event: asyncio.Event = asyncio.Event()
 
-        # Validate required environment variables
         if not all(
             [
                 RABBITMQ_HOST,
@@ -290,7 +311,7 @@ class SpinitronWatchdog:
                 RABBITMQ_ROUTING_KEY_VAL,
             ]
         ):
-            # Type check to ensure all required RabbitMQ env vars are strings
+            # Ensure all required RabbitMQ env vars are strings
             rmq_host = cast(str, RABBITMQ_HOST)
             rmq_user = cast(str, RABBITMQ_USER)
             rmq_pass = cast(str, RABBITMQ_PASS)
@@ -345,7 +366,6 @@ class SpinitronWatchdog:
             logger.warning(
                 "HTTP session not initialized or closed for SSE reachability check."
             )
-            # Optionally, re-initialize: await self._initialize_resources() if it's safe
             return False
         try:
             timeout: aiohttp.ClientTimeout = aiohttp.ClientTimeout(total=5)
@@ -360,14 +380,16 @@ class SpinitronWatchdog:
             )
             return False
 
-    async def fetch_latest_spin(
+    async def fetch_latest_spin(  # pylint: disable=too-many-branches
         self,
-    ) -> Optional[SpinData]:  # pylint: disable=too-many-branches
+    ) -> Optional[SpinData]:
         """
-        Fetches the latest spin from the proxy API or primary Spinitron API.
+        Fetches the latest spin from the proxy API or primary Spinitron
+        API.
 
         Returns:
-        - Optional[SpinData]: The latest spin data if successful, else None.
+        - Optional[SpinData]: The latest spin data if successful, else
+            None.
         """
         latest_spin: Optional[SpinData] = None
         if not self.http_session or self.http_session.closed:
@@ -385,7 +407,6 @@ class SpinitronWatchdog:
                 ) as response:
                     if response.status == 200:
                         spins_data_raw: Any = await response.json()
-                        # Basic validation of response structure
                         if (
                             isinstance(spins_data_raw, dict)
                             and "items" in spins_data_raw
@@ -422,7 +443,7 @@ class SpinitronWatchdog:
         else:
             logger.debug("Proxy SPIN_GET_URL not configured. Skipping proxy attempt.")
 
-        # Attempt 2: Fetch from Primary Spinitron API
+        # Attempt 2: Proxy did not return, so attempt to fetch from Primary Spinitron API
         if latest_spin is None and PRIMARY_SPIN_GET_URL and SPINITRON_API_KEY:
             logger.info(
                 "Falling back to primary Spinitron API: `%s`", PRIMARY_SPIN_GET_URL
@@ -480,10 +501,10 @@ class SpinitronWatchdog:
 
     async def send_to_rabbitmq(self, spin_data: SpinData) -> None:
         """
-        Sends spin data to RabbitMQ with retry logic.
+        Sends a single spin's data to RabbitMQ (with retry logic).
 
         Parameters:
-        - spin_data (SpinData): The spin data to send.
+        - spin_data (SpinData): Data to send.
         """
         if self.rabbitmq_publisher is None:
             logger.error(
@@ -512,34 +533,33 @@ class SpinitronWatchdog:
             try:
                 await self.rabbitmq_publisher.connect()
                 logger.info(
-                    "RabbitMQ publisher (re)connected successfully via send_to_rabbitmq."
+                    "RabbitMQ publisher (re)connected successfully via send_to_rabbitmq()."
                 )
             except Exception as e:  # pylint: disable=broad-except
                 logger.error(
-                    "Failed to (re)connect RabbitMQ publisher in send_to_rabbitmq: `%s`. Spin data "
-                    "for `%s - %s` may be lost if retries also fail.",
+                    "Failed to (re)connect RabbitMQ publisher in send_to_rabbitmq(): `%s`. Spin "
+                    "data for `%s - %s` may be lost if retries also fail.",
                     e,
                     spin_data.get("artist"),
                     spin_data.get("song"),
                 )
-                # Continue to retry logic, which will use the (potentially failed) publisher.
 
         max_publish_retries: int = int(os.getenv("RABBITMQ_PUBLISH_RETRIES", "3"))
         publish_retry_delay: int = int(os.getenv("RABBITMQ_PUBLISH_RETRY_DELAY", "5"))
 
         for attempt in range(max_publish_retries):
             try:
-                # Ensure publisher is still valid before attempting publish
+                # Ensure publisher is still valid before attempting a publish
                 if (
                     self.rabbitmq_publisher is None
-                ):  # Could be set to None if initial connect failed badly
+                ):  # Could be set to None if the initial connection failed badly
                     logger.error(
                         "RabbitMQ publisher became None before publish attempt %d. Message lost.",
                         attempt + 1,
                     )
                     return
                 await self.rabbitmq_publisher.publish(spin_data)
-                return  # Success
+                return  # Successly published, exit the loop
             except aiormq.exceptions.ChannelInvalidStateError as e:
                 logger.warning(
                     "Publish attempt %d/%d failed: Channel is closed. Spin: `%s - %s`. Error: %s",
@@ -563,7 +583,8 @@ class SpinitronWatchdog:
                 Exception  # pylint: disable=broad-except
             ) as e:  # Catch any other unexpected error during the publish call
                 logger.critical(
-                    "Unexpected error during publish attempt %d/%d for spin `%s - %s`: %s",
+                    "BREAKING: unexpected error during publish attempt %d/%d for spin `%s - %s`: "
+                    "%s",
                     attempt + 1,
                     max_publish_retries,
                     spin_data.get("artist"),
@@ -587,18 +608,20 @@ class SpinitronWatchdog:
 
     async def process_spin(self, spin: SpinData) -> None:
         """
-        Processes a new spin: checks for duplicates and publishes if
-        new.
+        Processes a new spin: checks for duplicates and publishes to the
+        queue if it's a new spin.
 
         Parameters:
-        - spin (SpinData): The spin data to process.
+        - spin (SpinData): Data to process.
         """
         spin_id: Optional[Union[str, int]] = spin.get("id")
+
+        # Basic comparison of spin IDs
         if spin_id != self.spin_state.last_spin_id:
             self.spin_state.last_spin_id = spin_id
             await self.send_to_rabbitmq(spin)
         else:
-            logger.debug(
+            logger.info(
                 "Duplicate spin received (ID: `%s`). Skipping publish.", spin_id
             )
 
@@ -606,7 +629,7 @@ class SpinitronWatchdog:
         self,
     ) -> None:
         """
-        Listens for SSE events and processes new spins.
+        Loop to listen for SSE events and process new spins.
         """
         if not SSE_STREAM_URL:
             logger.warning(
@@ -615,7 +638,7 @@ class SpinitronWatchdog:
             await self.poll_for_spins()
             return
 
-        logger.debug("Listening for SSE at: %s", SSE_STREAM_URL)
+        logger.debug("Listening for SSE at: `%s`", SSE_STREAM_URL)
         circuit_breaker_failure_count: int = 0
         retry_count: int = 0
 
@@ -632,6 +655,7 @@ class SpinitronWatchdog:
                     if self.shutdown_event.is_set():
                         break
                 except asyncio.TimeoutError:
+                    # Timeout expired, continue to next iteration
                     pass
                 circuit_breaker_failure_count = 0
                 retry_count = 0
@@ -639,15 +663,15 @@ class SpinitronWatchdog:
 
             try:
                 if retry_count == 0:
-                    logger.info("Connecting to proxy SSE stream: %s", SSE_STREAM_URL)
+                    logger.info("Connecting to proxy SSE stream: `%s`", SSE_STREAM_URL)
                 else:
                     logger.info(
-                        "Reconnecting to proxy SSE stream (attempt #%d): %s",
+                        "Reconnecting to proxy SSE stream (attempt #%d): `%s`",
                         retry_count + 1,
                         SSE_STREAM_URL,
                     )
 
-                # Ensure http_session is available for aiosseclient
+                # Ensure `http_session` is available for `aiosseclient`
                 if not self.http_session or self.http_session.closed:
                     logger.warning(
                         "HTTP session for SSE is closed or None. Re-initializing."
@@ -663,7 +687,7 @@ class SpinitronWatchdog:
                         break
                     if retry_count > 0 or circuit_breaker_failure_count > 0:
                         logger.info(
-                            "Successfully (re)connected to proxy SSE stream: %s",
+                            "Successfully (re)connected to proxy SSE stream: `%s`",
                             SSE_STREAM_URL,
                         )
                         retry_count = 0
@@ -689,7 +713,7 @@ class SpinitronWatchdog:
                 circuit_breaker_failure_count += 1
                 retry_count += 1
                 logger.warning(
-                    "Proxy SSE connection error (attempt #%d, CB count: %d) for %s: %s",
+                    "Proxy SSE connection error (attempt #%d, CB count: %d) for `%s`: %s",
                     retry_count,
                     circuit_breaker_failure_count,
                     SSE_STREAM_URL,
@@ -698,7 +722,10 @@ class SpinitronWatchdog:
                 if retry_count > MAX_RETRIES_SSE:
                     logger.warning("Max SSE retries exceeded. Switching to polling.")
                     await self.poll_for_spins()
-                    logger.info("Returned from polling. Resetting SSE retry counters.")
+                    logger.info(
+                        "Returned from polling (detected SSE reconnect). Resetting SSE "
+                        "retry counters."
+                    )
                     retry_count = 0
                     circuit_breaker_failure_count = 0
                     continue
@@ -734,6 +761,8 @@ class SpinitronWatchdog:
     ) -> None:
         """
         Polls for new spins if SSE is unavailable or not configured.
+        Continues to check for SSE availability at regular intervals.
+        If SSE becomes available, it exits the polling loop.
 
         Parameters:
         - poll_interval (Optional[int]): The interval to poll for spins.
@@ -809,7 +838,7 @@ class SpinitronWatchdog:
                     pass
             except Exception as e:  # pylint: disable=broad-except
                 logger.critical(
-                    "Unexpected critical error in polling loop: %s. Stopping.",
+                    "STOPPING: Unexpected critical error in polling loop: %s",
                     e,
                     exc_info=True,
                 )
@@ -818,7 +847,9 @@ class SpinitronWatchdog:
 
     async def run(self) -> None:  # pylint: disable=too-many-branches
         """
-        Main entry point to run the watchdog.
+        Main entry point to run the watchdog. Sets up signal handlers,
+        initializes resources, and starts the main loop for either SSE
+        or polling.
         """
         loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
         for sig_name_str in ("SIGINT", "SIGTERM"):
@@ -842,10 +873,10 @@ class SpinitronWatchdog:
                 self.shutdown_event.set()
 
             # Fallback loop if primary tasks exit without setting shutdown
-            # This should ideally not be reached if tasks are robust.
+            # This should ideally not be reached if tasks are robust!
             while not self.shutdown_event.is_set():
                 logger.warning(
-                    "Main monitoring task exited unexpectedly. Re-evaluating mode in 10s."
+                    "Main monitoring task exited unexpectedly. Re-evaluating mode in 10s..."
                 )
                 await asyncio.sleep(10)
                 if self.shutdown_event.is_set():
@@ -861,7 +892,7 @@ class SpinitronWatchdog:
                     await self.poll_for_spins()
                 else:
                     logger.error(
-                        "No valid operation mode after unexpected exit. Setting shutdown."
+                        "No valid operation mode after unexpected exit. Setting shutdown..."
                     )
                     self.shutdown_event.set()
 
@@ -877,6 +908,10 @@ class SpinitronWatchdog:
 
 
 if __name__ == "__main__":
+    """
+    Initializes and runs the SpinitronWatchdog.
+    """
+
     watchdog = SpinitronWatchdog()
     try:
         asyncio.run(watchdog.run())
