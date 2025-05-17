@@ -908,10 +908,6 @@ class SpinitronWatchdog:
 
 
 if __name__ == "__main__":
-    """
-    Initializes and runs the SpinitronWatchdog.
-    """
-
     watchdog = SpinitronWatchdog()
     try:
         asyncio.run(watchdog.run())
