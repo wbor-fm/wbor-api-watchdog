@@ -1,5 +1,5 @@
 # Stage 1: Builder
-FROM python:3.12-slim AS builder
+FROM python:3.13-slim AS builder
 WORKDIR /app
 
 # Install build tools and curl needed to install dependencies
@@ -17,7 +17,7 @@ RUN python -m venv /venv && \
 COPY . .
 
 # Stage 2: Production
-FROM python:3.12-slim
+FROM python:3.13-slim
 WORKDIR /app
 
 # Create a non-root user for better security
