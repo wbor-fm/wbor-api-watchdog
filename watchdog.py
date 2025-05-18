@@ -197,7 +197,7 @@ class RabbitMQPublisher:  # pylint: disable=too-many-instance-attributes
                 self.exchange_name, aio_pika.ExchangeType.TOPIC, durable=True
             )
             logger.info(
-                "RabbitMQ _on_rabbitmq_reconnect: Exchange `%s` re-declared successfully.",
+                "RabbitMQ _on_rabbitmq_reconnect: Exchange `%s` re-ensured/declared successfully.",
                 self.exchange_name,
             )
         except Exception as e:  # pylint: disable=broad-except
@@ -281,15 +281,16 @@ class RabbitMQPublisher:  # pylint: disable=too-many-instance-attributes
                 "Channel is None post-connect"
             )
 
-        logger.debug(
-            "RabbitMQ channel acquired. Declaring exchange `%s`.", self.exchange_name
+        logger.info(
+            "RabbitMQ channel acquired. Ensuring/declaring exchange `%s`.",
+            self.exchange_name,
         )
         self.exchange = await self.channel.declare_exchange(
             self.exchange_name, aio_pika.ExchangeType.TOPIC, durable=True
         )
         logger.info(
-            "RabbitMQPublisher connected to `%s`, exchange `%s` ensured/declared. Reconnect callback "
-            "registered.",
+            "RabbitMQPublisher connected to `%s`, exchange `%s` ensured/declared. Reconnect "
+            "callback registered.",
             self.host,
             self.exchange_name,
         )
@@ -461,7 +462,6 @@ class SpinitronWatchdog:
         """
         Initializes resources like HTTP session and RabbitMQ publisher.
         """
-        logger.info("Initializing resources...")
         self.http_session = aiohttp.ClientSession()
 
         if all(
@@ -819,7 +819,7 @@ class SpinitronWatchdog:
                     if retry_count == 0
                     else f"Reconnecting (attempt #{retry_count + 1})"
                 )
-                logger.info("`%s` to proxy SSE stream: `%s`", log_msg, SSE_STREAM_URL)
+                logger.info("%s to proxy SSE stream: `%s`", log_msg, SSE_STREAM_URL)
 
                 if not self.http_session or self.http_session.closed:
                     logger.warning(
