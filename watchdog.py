@@ -333,11 +333,12 @@ class RabbitMQPublisher:  # pylint: disable=too-many-instance-attributes
             # Publish the message to the exchange with the routing key
             await self.exchange.publish(message, routing_key=self.routing_key)
             logger.info(
-                "Published spin data to RabbitMQ on `%s` with key `%s`: `%s - %s`",
+                "Published spin data to RabbitMQ on `%s` with key `%s`: `%s - %s` (ID: `%s`)",
                 self.exchange_name,
                 self.routing_key,
                 spin_data.get("artist"),
                 spin_data.get("song"),
+                spin_data.get("id"),
             )
         else:  # Should be unreachable if self.connect() in the block above succeeded
             logger.error(
@@ -585,9 +586,10 @@ class SpinitronWatchdog:
                         ):
                             latest_spin = cast(SpinData, spins_data_raw["items"][0])
                             logger.info(
-                                "Successfully fetched latest spin from proxy: `%s - %s`",
+                                "Successfully fetched latest spin from proxy: `%s - %s` (ID: `%s`)",
                                 latest_spin.get("artist"),
                                 latest_spin.get("song"),
+                                latest_spin.get("id"),
                             )
                             return latest_spin
                         logger.warning(
@@ -775,7 +777,7 @@ class SpinitronWatchdog:
             await self.send_to_rabbitmq(spin)
         else:
             logger.info(
-                "Duplicate spin received (ID: `%s`). Skipping publish.", spin_id
+                "Duplicate spin received. Skipping publish. (ID: `%s`)", spin_id
             )
 
     async def listen_to_sse(  # pylint: disable=too-many-branches, too-many-statements
