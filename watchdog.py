@@ -37,10 +37,10 @@ import types
 from typing import Any, Dict, Optional, Union, cast
 
 import aio_pika
-import aio_pika.abc
 import aio_pika.exceptions
 import aiohttp
 import aiormq
+from aio_pika.abc import AbstractRobustConnection
 from aiosseclient import Event, aiosseclient
 from dotenv import load_dotenv
 
@@ -150,7 +150,9 @@ class RabbitMQPublisher:  # pylint: disable=too-many-instance-attributes
         self.exchange: Optional[aio_pika.abc.AbstractExchange] = None
         self._is_intentionally_closing: bool = False  # Flag to manage close behavior
 
-    async def _on_rabbitmq_reconnect(self, sender: aio_pika.RobustConnection) -> None:
+    async def _on_rabbitmq_reconnect(
+        self, _sender: AbstractRobustConnection | None
+    ) -> None:
         """
         Callback executed by aio_pika upon successful reconnection.
         This indicates the underlying AMQP connection is restored.
@@ -161,7 +163,7 @@ class RabbitMQPublisher:  # pylint: disable=too-many-instance-attributes
         """
         logger.info(
             "RabbitMQ connection successfully re-established by aio_pika to %s.",
-            sender.url.host,  # Using sender.url.host as it's the reconnected instance
+            self.host,
         )
         try:
             if (
@@ -217,9 +219,10 @@ class RabbitMQPublisher:  # pylint: disable=too-many-instance-attributes
             )
             try:
                 # self.connection is already typed as RobustConnection (or Optional of it)
-                self.connection.remove_reconnect_callback(  # type: ignore[attr-defined]
-                    self._on_rabbitmq_reconnect
-                )
+                if self.connection:
+                    self.connection.reconnect_callbacks.remove(
+                        self._on_rabbitmq_reconnect
+                    )
                 logger.debug("Removed old reconnect callback if it existed.")
             except (AttributeError, TypeError, ValueError, RuntimeError) as e:
                 logger.debug(
@@ -263,9 +266,8 @@ class RabbitMQPublisher:  # pylint: disable=too-many-instance-attributes
             )
             raise RuntimeError("connect_robust returned None unexpectedly.")
 
-        self.connection.add_reconnect_callback(  # type: ignore[attr-defined]
-            self._on_rabbitmq_reconnect
-        )
+        if self.connection:
+            self.connection.reconnect_callbacks.add(self._on_rabbitmq_reconnect)
 
         logger.debug("Acquiring RabbitMQ channel post-connect.")
         self.channel = await self.connection.channel()
@@ -352,9 +354,10 @@ class RabbitMQPublisher:  # pylint: disable=too-many-instance-attributes
             # Remove callback before closing to prevent it firing during shutdown
             try:
                 # self.connection is already typed as RobustConnection (or Optional of it)
-                self.connection.remove_reconnect_callback(  # type: ignore[attr-defined]
-                    self._on_rabbitmq_reconnect
-                )
+                if self.connection:
+                    self.connection.reconnect_callbacks.remove(
+                        self._on_rabbitmq_reconnect
+                    )
                 logger.debug("Removed reconnect callback during close.")
             except (AttributeError, TypeError, ValueError, RuntimeError) as e:
                 logger.debug(
