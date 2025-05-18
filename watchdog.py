@@ -162,7 +162,7 @@ class RabbitMQPublisher:  # pylint: disable=too-many-instance-attributes
             re-established.
         """
         logger.info(
-            "RabbitMQ connection successfully re-established by aio_pika to %s.",
+            "RabbitMQ connection successfully re-established by aio_pika to `%s`.",
             self.host,
         )
         try:
@@ -189,7 +189,7 @@ class RabbitMQPublisher:  # pylint: disable=too-many-instance-attributes
             )
 
             logger.debug(
-                "RabbitMQ _on_rabbitmq_reconnect: Attempting to re-declare exchange '%s'.",
+                "RabbitMQ _on_rabbitmq_reconnect: Attempting to re-declare exchange `%s`.",
                 self.exchange_name,
             )
             # Re-declare the exchange on the (potentially new) channel.
@@ -197,7 +197,7 @@ class RabbitMQPublisher:  # pylint: disable=too-many-instance-attributes
                 self.exchange_name, aio_pika.ExchangeType.TOPIC, durable=True
             )
             logger.info(
-                "RabbitMQ _on_rabbitmq_reconnect: Exchange '%s' re-declared successfully.",
+                "RabbitMQ _on_rabbitmq_reconnect: Exchange `%s` re-declared successfully.",
                 self.exchange_name,
             )
         except Exception as e:  # pylint: disable=broad-except
@@ -232,7 +232,7 @@ class RabbitMQPublisher:  # pylint: disable=too-many-instance-attributes
                 )
 
         logger.debug(
-            "Attempting to connect to RabbitMQ at %s and register reconnect callback.",
+            "Attempting to connect to RabbitMQ at `%s` and register reconnect callback.",
             self.host,
         )
         try:
@@ -252,7 +252,9 @@ class RabbitMQPublisher:  # pylint: disable=too-many-instance-attributes
                 aio_pika.RobustConnection, connection_object
             )  # Explicitly cast
         except Exception as e:
-            logger.error("Failed to connect_robust to RabbitMQ at %s: %s", self.host, e)
+            logger.error(
+                "Failed to connect_robust to RabbitMQ at `%s`: %s", self.host, e
+            )
             self.connection = None
             self.channel = None
             self.exchange = None
@@ -280,13 +282,13 @@ class RabbitMQPublisher:  # pylint: disable=too-many-instance-attributes
             )
 
         logger.debug(
-            "RabbitMQ channel acquired. Declaring exchange '%s'.", self.exchange_name
+            "RabbitMQ channel acquired. Declaring exchange `%s`.", self.exchange_name
         )
         self.exchange = await self.channel.declare_exchange(
             self.exchange_name, aio_pika.ExchangeType.TOPIC, durable=True
         )
         logger.info(
-            "RabbitMQPublisher connected to %s, exchange '%s' declared. Reconnect callback "
+            "RabbitMQPublisher connected to `%s`, exchange `%s` ensured/declared. Reconnect callback "
             "registered.",
             self.host,
             self.exchange_name,
@@ -817,7 +819,7 @@ class SpinitronWatchdog:
                     if retry_count == 0
                     else f"Reconnecting (attempt #{retry_count + 1})"
                 )
-                logger.info("%s to proxy SSE stream: `%s`", log_msg, SSE_STREAM_URL)
+                logger.info("`%s` to proxy SSE stream: `%s`", log_msg, SSE_STREAM_URL)
 
                 if not self.http_session or self.http_session.closed:
                     logger.warning(
@@ -893,7 +895,7 @@ class SpinitronWatchdog:
                 if self.shutdown_event.is_set():
                     break
                 logger.error(
-                    "Unexpected error in SSE listener: %s. Restarting SSE attempt.",
+                    "Unexpected error in SSE listener: `%s`. Restarting SSE attempt.",
                     e,
                     exc_info=True,
                 )
