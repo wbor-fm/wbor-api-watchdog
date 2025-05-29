@@ -333,7 +333,7 @@ class RabbitMQPublisher:  # pylint: disable=too-many-instance-attributes
             # Publish the message to the exchange with the routing key
             await self.exchange.publish(message, routing_key=self.routing_key)
             logger.info(
-                "Published spin data to RabbitMQ on `%s` with key `%s`: `%s - %s` (ID: `%s`)",
+                "Spin data published to `%s` with key `%s`: `%s - %s` (ID: `%s`)",
                 self.exchange_name,
                 self.routing_key,
                 spin_data.get("artist"),
@@ -569,9 +569,7 @@ class SpinitronWatchdog:
 
         # Attempt 1: Fetch from Proxy API
         if PROXY_SPIN_GET_URL:
-            logger.debug(
-                "Attempting to fetch latest spin from proxy: `%s`", PROXY_SPIN_GET_URL
-            )
+            logger.debug("Fetching latest spin from proxy: `%s`", PROXY_SPIN_GET_URL)
             try:
                 async with self.http_session.get(
                     PROXY_SPIN_GET_URL, timeout=aiohttp.ClientTimeout(total=10)
@@ -586,7 +584,7 @@ class SpinitronWatchdog:
                         ):
                             latest_spin = cast(SpinData, spins_data_raw["items"][0])
                             logger.info(
-                                "Successfully fetched latest spin from proxy: `%s - %s` (ID: `%s`)",
+                                "Fetched latest spin from proxy: `%s - %s` (ID: `%s`)",
                                 latest_spin.get("artist"),
                                 latest_spin.get("song"),
                                 latest_spin.get("id"),
@@ -637,7 +635,7 @@ class SpinitronWatchdog:
                         ):
                             latest_spin = cast(SpinData, spins_data_raw["items"][0])
                             logger.info(
-                                "Successfully fetched latest spin from primary API: `%s - %s`",
+                                "Fetched latest spin from primary API: `%s - %s`",
                                 latest_spin.get("artist"),
                                 latest_spin.get("song"),
                             )
