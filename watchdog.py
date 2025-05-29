@@ -993,14 +993,6 @@ class SpinitronWatchdog:
                         break
                 except asyncio.TimeoutError:
                     pass
-            except Exception as e:  # pylint: disable=broad-except
-                logger.critical(
-                    "STOPPING: Unexpected critical error in polling loop: %s",
-                    e,
-                    exc_info=True,
-                )
-                self.shutdown_event.set()  # Trigger shutdown
-                break  # Exit polling loop
 
     async def run(self) -> None:  # pylint: disable=too-many-branches
         """
@@ -1060,10 +1052,8 @@ class SpinitronWatchdog:
         except asyncio.CancelledError:
             logger.info("Main run task cancelled.")
         except Exception as e:  # pylint: disable=broad-except
-            logger.critical(
-                "Unhandled exception in SpinitronWatchdog run: %s", e, exc_info=True
-            )
-            self.shutdown_event.set()  # Ensure shutdown on unhandled exception
+            logger.critical("Fatal in run(): %s", e, exc_info=True)
+            sys.exit(1)
         finally:
             await self._cleanup_resources()
 
@@ -1079,9 +1069,10 @@ if __name__ == "__main__":
         if hasattr(watchdog, "shutdown_event") and not watchdog.shutdown_event.is_set():
             watchdog.shutdown_event.set()
     except Exception as e:  # pylint: disable=broad-except
-        logger.critical("Critical error in __main__ execution: %s", e, exc_info=True)
-        if hasattr(watchdog, "shutdown_event") and not watchdog.shutdown_event.is_set():
-            watchdog.shutdown_event.set()
+        # Real bug or unexpected state will kill the process with a non-zero code and Docker's
+        # --restart unless-stopped will bring it back up
+        logger.critical("Fatal in __main__: %s", e, exc_info=True)
+        sys.exit(1)
     finally:
         # Final check to ensure event is set, though watchdog.run() should handle it.
         if hasattr(watchdog, "shutdown_event") and not watchdog.shutdown_event.is_set():
