@@ -7,8 +7,8 @@ for fetching spins is down, it attempts to use the primary Spinitron
 API.
 
 Author: Mason Daugherty <@mdrxy>
-Version: 1.3.1
-Last Modified: 2025-05-18
+Version: 1.3.2
+Last Modified: 2025-05-29
 
 Changelog:
     - 1.0.0 (2025-03-23): Initial release.
@@ -23,6 +23,8 @@ Changelog:
     - 1.3.1 (2025-05-18): Added RabbitMQ reconnect callback for better
         logging and addressed Pylance typing issues for
         RobustConnection.
+    - 1.3.2 (2025-05-29): Escape in certain contexts so that Docker is
+        able to re-launch following the restart policy.
 """
 
 import asyncio
