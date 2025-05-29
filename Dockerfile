@@ -30,6 +30,11 @@ COPY --from=builder /app /app
 # Ensure the virtual environment's executables are used
 ENV PATH="/venv/bin:$PATH"
 
+# Install pgrep for healthcheck
+RUN apt-get update \
+    && apt-get install -y procps \
+    && rm -rf /var/lib/apt/lists/*
+
 # Switch to non-root user
 USER appuser
 
