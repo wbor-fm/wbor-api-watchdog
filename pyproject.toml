@@ -1,0 +1,43 @@
+[project]
+name = "wbor-api-watchdog"
+version = "0.1.0"
+description = "WBOR API Watchdog - A monitoring service for WBOR API endpoints"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = "~=3.13.0"
+dependencies = [
+    "aio-pika>=9.5.5,<10.0.0",
+    "aiohappyeyeballs>=2.6.1,<3.0.0",
+    "aiohttp>=3.12.14,<4.0.0",
+    "aiormq>=6.8.1,<7.0.0",
+    "aiosignal>=1.4.0,<2.0.0",
+    "aiosseclient>=0.1.8,<0.2.0",
+    "attrs>=25.3.0,<26.0.0",
+    "colorlog>=6.9.0,<7.0.0",
+    "exceptiongroup>=1.3.0,<2.0.0",
+    "frozenlist>=1.6.0,<2.0.0",
+    "idna>=3.10.0,<4.0.0",
+    "multidict>=6.4.3,<7.0.0",
+    "pamqp>=3.3.0,<4.0.0",
+    "propcache>=0.3.1,<1.0.0",
+    "python-dotenv>=1.1.0,<3.0.0",
+    "pytz>=2025.2,<2026.0",
+    "yarl>=1.20.0,<2.0.0",
+]
+
+[project.urls]
+Repository = "https://github.com/WBOR-91-1-FM/wbor-api-watchdog"
+
+[tool.uv]
+dev-dependencies = []
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "C90", "I", "N", "UP", "S", "B", "A", "C4", "T20", "PT"]
+ignore = ["S101"]  # Allow assert statements
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

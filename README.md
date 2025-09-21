@@ -6,6 +6,10 @@ If the SSE stream from the proxy is interrupted, the watchdog will attempt to re
 
 ## Usage
 
+This project uses [uv](https://docs.astral.sh/uv/) for dependency management.
+
+### Docker Deployment (Recommended)
+
 Ensure Make is installed on your system.
 
 1. Clone the repository
@@ -17,3 +21,11 @@ Ensure Make is installed on your system.
 3. Change values in the Makefile as needed (enter a HOST_DIR)
 4. Run `make`
    - Alternatively, run `DOCKER_TOOL=podman make` if you are using Podman
+
+### Local Development
+
+1. Install uv: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+2. Clone the repository
+3. Copy `.env.sample` as `.env` and fill in values
+4. Install dependencies: `uv sync`
+5. Run the application: `uv run python watchdog.py`

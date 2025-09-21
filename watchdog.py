@@ -5,26 +5,6 @@ RabbitMQ. Listens for SSE updates to indicate a new spin is available,
 falling back to polling if SSE becomes unavailable. If the proxy API
 for fetching spins is down, it attempts to use the primary Spinitron
 API.
-
-Author: Mason Daugherty <@mdrxy>
-Version: 1.3.2
-Last Modified: 2025-05-29
-
-Changelog:
-    - 1.0.0 (2025-03-23): Initial release.
-    - 1.1.0 (2025-04-15): Fixes and enhancements to RabbitMQ connection
-        management, error handling, and state management.
-    - 1.2.0 (2025-05-12): Added fallback to primary Spinitron API if
-        proxy API is unreachable for fetching spins. Refactored to
-        remove global variables.
-    - 1.3.0 (2025-05-16): Added type hinting throughout the script,
-        and substantially refactored to ensure robustness and
-        maintainability. Improved error handling and logging.
-    - 1.3.1 (2025-05-18): Added RabbitMQ reconnect callback for better
-        logging and addressed Pylance typing issues for
-        RobustConnection.
-    - 1.3.2 (2025-05-29): Escape in certain contexts so that Docker is
-        able to re-launch following the restart policy.
 """
 
 import asyncio
@@ -874,7 +854,9 @@ class SpinitronWatchdog:
                 )
                 if retry_count > MAX_RETRIES_SSE:
                     logger.warning("Max SSE retries exceeded. Switching to polling.")
-                    await self.poll_for_spins()  # Will run until SSE is available again or shutdown
+                    await (
+                        self.poll_for_spins()
+                    )  # Will run until SSE is available again or shutdown
                     logger.info(
                         "Returned from polling. Will attempt SSE again if not shutting down."
                     )

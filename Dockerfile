@@ -2,16 +2,17 @@
 FROM python:3.13-slim AS builder
 WORKDIR /app
 
-# Install build tools and curl needed to install dependencies
+# Install build tools and curl needed to install uv
 RUN apt-get update && \
     apt-get install -y curl build-essential && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and build virtual environment with dependencies
-COPY requirements.txt .
-RUN python -m venv /venv && \
-    /venv/bin/pip install --upgrade pip && \
-    /venv/bin/pip install --no-cache-dir -r requirements.txt
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
+# Copy dependencies files and create virtual environment with dependencies
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen
 
 # Copy the complete source code
 COPY . .
@@ -24,11 +25,11 @@ WORKDIR /app
 RUN adduser --disabled-password --gecos "" appuser
 
 # Copy virtual environment and application source from builder
-COPY --from=builder /venv /venv
+COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app /app
 
 # Ensure the virtual environment's executables are used
-ENV PATH="/venv/bin:$PATH"
+ENV PATH="/app/.venv/bin:$PATH"
 
 # Install pgrep for healthcheck
 RUN apt-get update \
